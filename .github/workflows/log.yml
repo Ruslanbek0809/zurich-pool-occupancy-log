@@ -1,13 +1,24 @@
 name: log feed
 
+# One run logs the feed every 15 minutes for 5 h 30 min and then starts the next run.
+# The cron line only restarts the chain if it ever breaks: GitHub starts scheduled runs
+# of this repository hours apart, so the schedule alone cannot give a 15-minute log.
 on:
   schedule:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long this run logs before it starts the next one"
+        type: number
+        default: 330
 
 permissions:
   contents: write
+  actions: write
 
+# One run at a time. A run started while another is logging waits; the run that the
+# logging run starts at its end takes the place of any other waiting run.
 concurrency:
   group: log-feed
   cancel-in-progress: false
@@ -15,30 +26,22 @@ concurrency:
 jobs:
   log:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Fetch feed and append
-        run: python3 log_feed.py
-
-      - name: Commit and push data
+      - name: Log the feed every 15 minutes
+        env:
+          RUN_MIN: ${{ inputs.minutes || 330 }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
-          git commit -m "data: log $(date -u +%Y-%m-%dT%H:%MZ)"
-          for attempt in 1 2 3 4 5; do
-            if git push; then
-              exit 0
-            fi
-            echo "Push failed (attempt $attempt), rebasing and retrying."
-            sleep $((attempt * 5))
-            git pull --rebase
-          done
-          echo "Push failed after 5 attempts."
-          exit 1
+          bash log_loop.sh
+
+      # Not after a manual cancel, so that cancelling a run stops the chain.
+      - name: Start the next run
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run log.yml --ref main

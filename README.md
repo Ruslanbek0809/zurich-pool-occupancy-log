@@ -18,7 +18,7 @@ See the dataset page for details on how the data are collected.
 - `data/YYYY-MM.csv`: one file per month (month of the UTC fetch time). UTF-8, comma-separated, header in the first line.
 - `data/YYYY-MM_schema2.csv`, `_schema3.csv`, …: only created if the source changes its columns during a month; a file never mixes two headers.
 - `data/failures.log`: one line per failed fetch (see below).
-- `log_feed.py`: the logger (Python standard library only). `.github/workflows/log.yml`: the schedule.
+- `log_feed.py`: one fetch (Python standard library only). `log_loop.sh`: calls it every 15 minutes and commits each fetch. `.github/workflows/log.yml`: runs the loop on GitHub Actions.
 
 ### Columns
 
@@ -40,14 +40,18 @@ Observed on 2026-11-10: `retrievaltime` looks like `2026-11-10 19:09:53.392708+0
 It differs per row (the source appears to read the pools one after another, about a second apart).
 It is the time the **source** read its sensors, not the time of this fetch: when the source does not update, consecutive fetches log the same snapshot again with the same `retrievaltime`.
 For example, on 2026-11-10 the feed still showed the 19:09–19:10 local-time snapshot at 23:58 local time.
+The source also stalls for longer: the fetches of 2026-11-12 16:52 and 22:40 UTC and of 2026-11-13 02:57 UTC all showed the snapshot of 2026-11-12 14:37 local time.
 Use `retrievaltime` to detect repeated snapshots; use `logged_at_utc` to know when the snapshot was seen.
 
-## Schedule and its limits
+## How it runs and its limits
 
-The workflow is scheduled at minutes 7, 22, 37 and 52 of every hour (UTC).
-GitHub's scheduler gives no guarantee: runs are often delayed by several minutes and are sometimes skipped, especially at busy times.
-So intervals between `logged_at_utc` values are not exactly 15 minutes, and gaps are real missing observations, not zero guests.
-Each successful run appends one block of rows and makes one commit; runs never overlap.
+One workflow run fetches the feed at minutes 7, 22, 37 and 52 of every hour for 5 hours 30 minutes (GitHub ends a job after 6 hours), then starts the next run.
+The next run waits for its first slot, so a hand-over normally loses no fetch; if GitHub starts it late, slots are missing.
+Each fetch appends one block of rows and makes one commit; runs never overlap.
+Gaps between `logged_at_utc` values are real missing observations, not zero guests.
+
+Before 2026-11-14 the log relied on GitHub's cron schedule alone, which started a run of this repository only every 4 to 9 hours: the days 2026-11-11 to 2026-11-13 hold nine fetches in total.
+The cron line is kept only to restart the chain of runs if it breaks.
 
 ## Failures
 
@@ -57,11 +61,12 @@ If the download fails after three attempts, or the response is empty, not UTF-8,
 2026-11-10T22:56:48Z	fetch failed after 3 attempts: URLError: <urlopen error [Errno 61] Connection refused>
 ```
 
-(UTC time, a tab, the reason.) A run that is skipped by GitHub leaves no trace at all; only the gap in `logged_at_utc` shows it.
+(UTC time, a tab, the reason.) A slot with no running workflow leaves no trace at all; only the gap in `logged_at_utc` shows it.
 
 ## Running it locally
 
 ```
 python3 log_feed.py              # fetch once and append to data/
 python3 log_feed.py <url>        # use another feed URL (also: FEED_URL environment variable)
+RUN_MIN=45 bash log_loop.sh      # fetch at every slot for 45 minutes, commit and push each fetch
 ```
